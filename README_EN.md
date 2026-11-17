@@ -162,6 +162,7 @@ Optional chat UI: `cd deep-agents-ui && yarn install && yarn dev`, then open htt
 Set `ENABLE_ELASTICSEARCH=true` / `ENABLE_DYNATRACE=true` to enable them. When disabled (the default), the sub-agent is not registered, its tools are not loaded, the orchestrator prompt does not mention it, `scripts/mcp.sh` does not start its MCP server, and the report marks it as disabled. Restart `langgraph dev` after changing these flags.
 
 - Elasticsearch uses Elastic's official MCP server, which is **deprecated** (security fixes only; Elastic recommends the Agent Builder MCP endpoint on 9.2+). It supports Elasticsearch 8.x / 9.x.
+- LangSmith is not used: tracing is forced off at startup and LangSmith API key variables are removed, so inspection data is sent only to your configured LLM provider.
 - Dynatrace uses a read-only MCP server bundled in this repo (`patrol_agent/dynatrace_mcp/`) for Dynatrace SaaS (classic) / Managed via Environment API v2.
 
 ## Tests

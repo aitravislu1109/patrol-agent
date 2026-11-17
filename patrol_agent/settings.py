@@ -18,6 +18,15 @@ _ENV_PATH = _BASE_DIR / ".env"
 if _ENV_PATH.exists():
     load_dotenv(_ENV_PATH, override=False)
 
+# 強制關閉 LangSmith 追蹤：巡檢資料（叢集狀態、指標、日誌）不送往外部服務。
+# 即使 shell 或 .env 裡設定了相關變數，也會在這裡被覆寫或移除。
+_TRACING_FLAGS = ("LANGSMITH_TRACING", "LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING", "LANGCHAIN_TRACING_V2")
+_TRACING_KEYS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
+for _name in _TRACING_FLAGS:
+    os.environ[_name] = "false"
+for _name in _TRACING_KEYS:
+    os.environ.pop(_name, None)
+
 
 def env_bool(name: str, default: bool = False) -> bool:
     """把環境變數解析成布林值；未設定時回傳 default。"""

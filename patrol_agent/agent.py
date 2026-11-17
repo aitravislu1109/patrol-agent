@@ -11,6 +11,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+# 必須最先載入 settings：它會在任何 LangChain 模組讀取環境變數之前關閉 LangSmith 追蹤
+from settings import Settings, settings  # noqa: E402, I001
+
 from deepagents import (  # noqa: E402
     GeneralPurposeSubagentProfile,
     HarnessProfile,
@@ -19,7 +22,6 @@ from deepagents import (  # noqa: E402
 )
 
 from prompts import build_main_prompt  # noqa: E402
-from settings import Settings, settings  # noqa: E402
 from subagents import build_subagents  # noqa: E402
 from think_tool import sre_think_tool  # noqa: E402
 

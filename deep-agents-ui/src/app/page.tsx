@@ -234,9 +234,6 @@ function HomePageContent() {
     setConfig(newConfig);
   }, []);
 
-  const langsmithApiKey =
-    config?.langsmithApiKey || process.env.NEXT_PUBLIC_LANGSMITH_API_KEY || "";
-
   if (!config) {
     return (
       <>
@@ -264,10 +261,7 @@ function HomePageContent() {
   }
 
   return (
-    <ClientProvider
-      deploymentUrl={config.deploymentUrl}
-      apiKey={langsmithApiKey}
-    >
+    <ClientProvider deploymentUrl={config.deploymentUrl}>
       <HomePageInner
         config={config}
         configDialogOpen={configDialogOpen}

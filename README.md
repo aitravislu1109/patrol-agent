@@ -265,6 +265,7 @@ cd patrol_agent && uv run pytest
 
 - **Elastic 官方 MCP 已標示 deprecated**（只提供安全性更新），官方建議 Elastic 9.2+ 改用 Agent Builder MCP 端點。它支援 Elasticsearch 8.x / 9.x。工具名稱可用 `ES_MCP_TOOL_*` 環境變數覆寫，方便日後改接。
 - **Dynatrace MCP 是本 repo 自寫**，針對 SaaS 舊版與 Managed 的 Environment API v2。Dynatrace 新平台（`*.apps.dynatrace.com`）可改用官方 [dynatrace-mcp](https://github.com/dynatrace-oss/dynatrace-mcp)。
+- **不使用 LangSmith**：程式啟動時會強制關閉 LangSmith 追蹤並移除相關 API key 環境變數，巡檢資料不會送往 LangSmith。資料只會送到你設定的 LLM 服務。
 - 模型判斷有不確定性；報告中的推論應由人員確認後再採取行動。
 
 ## 授權

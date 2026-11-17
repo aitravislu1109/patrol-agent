@@ -12,23 +12,17 @@ const ClientContext = createContext<ClientContextValue | null>(null);
 interface ClientProviderProps {
   children: ReactNode;
   deploymentUrl: string;
-  apiKey: string;
 }
 
-export function ClientProvider({
-  children,
-  deploymentUrl,
-  apiKey,
-}: ClientProviderProps) {
+export function ClientProvider({ children, deploymentUrl }: ClientProviderProps) {
   const client = useMemo(() => {
     return new Client({
       apiUrl: deploymentUrl,
       defaultHeaders: {
         "Content-Type": "application/json",
-        "X-Api-Key": apiKey,
       },
     });
-  }, [deploymentUrl, apiKey]);
+  }, [deploymentUrl]);
 
   const value = useMemo(() => ({ client }), [client]);
 
