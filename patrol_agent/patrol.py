@@ -10,7 +10,11 @@
     # 不經過 LangGraph API，直接在本機程序內執行 graph
     uv run python patrol.py --namespace payments --once --local
 
-報告寫到 reports/<namespace>/<YYYYmmdd-HHMMSS>.md（可用 --reports-dir 或 PATROL_REPORTS_DIR 改位置）。
+    # 只巡檢指定的 Deployment（可重複 --deployment；此時只能指定一個 namespace）
+    uv run python patrol.py --namespace payments --deployment checkout --once
+
+報告寫到 reports/<namespace>/<YYYYmmdd-HHMMSS>.md；指定 Deployment 時為
+reports/<namespace>/<YYYYmmdd-HHMMSS>-<deployment>.md（可用 --reports-dir 或 PATROL_REPORTS_DIR 改位置）。
 """
 
 from __future__ import annotations
@@ -19,6 +23,7 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,12 +41,31 @@ logger = logging.getLogger("patrol")
 REPORT_PATH = "/patrol_report.md"
 DEFAULT_REPORTS_DIR = _HERE.parent / "reports"
 
+# Kubernetes 名稱（RFC 1123）：namespace 與 Deployment 名稱都會用在報告路徑上，先驗證格式
+_K8S_NAME_RE = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$")
 
-def build_request(namespace: str, now: datetime) -> str:
-    """組出送給主 Agent 的巡檢指令。"""
+
+def k8s_name(value: str) -> str:
+    """argparse 型別：驗證 Kubernetes 資源名稱格式。"""
+    if not _K8S_NAME_RE.match(value):
+        raise argparse.ArgumentTypeError(f"不是合法的 Kubernetes 名稱：{value!r}（只能包含小寫英數、- 與 .）")
+    return value
+
+
+def build_request(namespace: str, now: datetime, deployments: list[str] | None = None) -> str:
+    """組出送給主 Agent 的巡檢指令；有指定 deployments 時只巡檢這些 Deployment。"""
     local = now.astimezone()
+    if deployments:
+        names = "、".join(f"「{d}」" for d in deployments)
+        scope = (
+            "巡檢範圍：指定 Deployment\n"
+            f"請只巡檢 Kubernetes namespace「{namespace}」中的 Deployment：{names}。\n"
+            "不要巡檢這個 namespace 的其他 Deployment。\n"
+        )
+    else:
+        scope = f"巡檢範圍：整個 namespace\n請巡檢 Kubernetes namespace「{namespace}」下的所有 Deployment。\n"
     return (
-        f"請巡檢 Kubernetes namespace「{namespace}」下的所有 Deployment。\n"
+        f"{scope}"
         f"巡檢時間：{local.strftime('%Y-%m-%d %H:%M:%S %Z')}（UTC {now.strftime('%Y-%m-%dT%H:%M:%SZ')}）\n"
         f"時間窗：最近 {settings.lookback}\n"
         f"完成後將報告寫入 {REPORT_PATH}。"
@@ -69,22 +93,43 @@ def extract_report(values: dict[str, Any]) -> str | None:
     return None
 
 
-def write_report(reports_dir: Path, namespace: str, started: datetime, content: str) -> Path:
-    """把報告寫入 reports/<namespace>/<時間>.md。"""
+def write_report(
+    reports_dir: Path,
+    namespace: str,
+    started: datetime,
+    content: str,
+    deployments: list[str] | None = None,
+) -> Path:
+    """把報告寫入 reports/<namespace>/<時間>[-<deployment>].md。"""
     target_dir = reports_dir / namespace
     target_dir.mkdir(parents=True, exist_ok=True)
-    path = target_dir / f"{started.astimezone().strftime('%Y%m%d-%H%M%S')}.md"
+    stem = started.astimezone().strftime("%Y%m%d-%H%M%S")
+    if deployments:
+        suffix = "_".join(deployments)
+        if len(suffix) > 100:  # 指定很多 Deployment 時避免檔名過長
+            suffix = f"{deployments[0]}_and_{len(deployments) - 1}_more"
+        stem = f"{stem}-{suffix}"
+    path = target_dir / f"{stem}.md"
     path.write_text(content, encoding="utf-8")
     return path
 
 
-async def run_via_api(namespace: str, request: str, api_url: str, assistant_id: str) -> dict[str, Any]:
+async def run_via_api(
+    namespace: str,
+    request: str,
+    api_url: str,
+    assistant_id: str,
+    deployments: list[str] | None = None,
+) -> dict[str, Any]:
     """透過 LangGraph API 執行巡檢，回傳最終狀態。"""
     from langgraph_sdk import get_client
 
     client = get_client(url=api_url)
-    thread = await client.threads.create(metadata={"kind": "patrol", "namespace": namespace})
-    logger.info("thread=%s namespace=%s", thread["thread_id"], namespace)
+    metadata: dict[str, Any] = {"kind": "patrol", "namespace": namespace}
+    if deployments:
+        metadata["deployments"] = ",".join(deployments)
+    thread = await client.threads.create(metadata=metadata)
+    logger.info("thread=%s namespace=%s deployments=%s", thread["thread_id"], namespace, deployments or "all")
     await client.runs.wait(
         thread["thread_id"],
         assistant_id,
@@ -106,24 +151,26 @@ async def run_local(request: str) -> dict[str, Any]:
 
 
 async def patrol_once(namespace: str, args: argparse.Namespace) -> Path | None:
-    """巡檢一個 namespace 一次並寫出報告。"""
+    """巡檢一個 namespace（或其中指定的 Deployment）一次並寫出報告。"""
+    deployments = args.deployment or None
     started = datetime.now(UTC)
-    request = build_request(namespace, started)
-    logger.info("開始巡檢 namespace=%s", namespace)
+    request = build_request(namespace, started, deployments)
+    target = f"{namespace}/{','.join(deployments)}" if deployments else namespace
+    logger.info("開始巡檢 %s", target)
     try:
         if args.local:
             values = await run_local(request)
         else:
-            values = await run_via_api(namespace, request, args.api_url, args.assistant_id)
+            values = await run_via_api(namespace, request, args.api_url, args.assistant_id, deployments)
     except Exception:  # noqa: BLE001
-        logger.exception("巡檢失敗 namespace=%s", namespace)
+        logger.exception("巡檢失敗 %s", target)
         return None
     report = extract_report(values)
     if not report:
-        logger.error("巡檢結束但沒有取得報告 namespace=%s", namespace)
+        logger.error("巡檢結束但沒有取得報告 %s", target)
         return None
-    path = write_report(Path(args.reports_dir), namespace, started, report)
-    logger.info("巡檢完成 namespace=%s 報告=%s", namespace, path)
+    path = write_report(Path(args.reports_dir), namespace, started, report, deployments)
+    logger.info("巡檢完成 %s 報告=%s", target, path)
     return path
 
 
@@ -144,7 +191,16 @@ async def main_async(args: argparse.Namespace) -> int:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Kubernetes namespace 自動巡檢")
-    parser.add_argument("--namespace", "-n", action="append", required=True, help="要巡檢的 namespace，可重複指定")
+    parser.add_argument(
+        "--namespace", "-n", action="append", required=True, type=k8s_name, help="要巡檢的 namespace，可重複指定"
+    )
+    parser.add_argument(
+        "--deployment",
+        "-d",
+        action="append",
+        type=k8s_name,
+        help="只巡檢指定的 Deployment，可重複指定；使用時只能指定一個 namespace",
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--once", action="store_true", help="只巡檢一次（預設）")
     mode.add_argument("--interval", help="定時巡檢間隔，例如 30m、1h")
@@ -153,6 +209,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--assistant-id", default=os.getenv("PATROL_ASSISTANT_ID", "patrol_agent"))
     parser.add_argument("--reports-dir", default=os.getenv("PATROL_REPORTS_DIR", str(DEFAULT_REPORTS_DIR)))
     args = parser.parse_args(argv)
+    if args.deployment:
+        if len(args.namespace) != 1:
+            parser.error("使用 --deployment 時只能指定一個 --namespace")
+        args.deployment = list(dict.fromkeys(args.deployment))  # 去除重複、保留順序
     if args.interval:
         parse_duration(args.interval)  # 提早檢查格式
     return args

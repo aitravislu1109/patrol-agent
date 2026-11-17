@@ -97,7 +97,7 @@ sequenceDiagram
 
     T->>M: Patrol namespace=xxx (time, lookback window)
     M->>M: write_todos: list → inspect in batches → report
-    M->>K: List all Deployments with basic status
+    M->>K: List Deployments (all, or only the specified ones) with basic status
     K-->>M: replicas / selector / image / restarts / Warning events
     M->>M: One todo per Deployment, PATROL_BATCH_SIZE per batch
 
@@ -153,7 +153,13 @@ cd patrol_agent && uv run langgraph dev --no-browser
 cd patrol_agent && uv run python patrol.py --namespace payments --once
 ```
 
-Use `--interval 30m` to run on a schedule, or `--local` to run the graph in-process without `langgraph dev`. Reports go to `reports/<namespace>/<YYYYmmdd-HHMMSS>.md`.
+To inspect only specific Deployments (repeat `--deployment` for more; only one namespace is allowed then):
+
+```bash
+cd patrol_agent && uv run python patrol.py --namespace payments --deployment checkout --once
+```
+
+Use `--interval 30m` to run on a schedule, or `--local` to run the graph in-process without `langgraph dev`; these combine with `--deployment`. Reports go to `reports/<namespace>/<YYYYmmdd-HHMMSS>.md`, or `reports/<namespace>/<YYYYmmdd-HHMMSS>-<deployment>.md` when Deployments are specified.
 
 Optional chat UI: `cd deep-agents-ui && yarn install && yarn dev`, then open http://localhost:3300 with Deployment URL `http://localhost:2024` and Assistant ID `patrol_agent`.
 

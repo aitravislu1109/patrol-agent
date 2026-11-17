@@ -16,7 +16,7 @@ SRE Patrol Agent 把這件事交給 AI Agent：你只要給一個 namespace，�
 - **透過 MCP 串接既有工具**：不需要改動現有的監控系統。**Kubernetes、Prometheus** 固定啟用；**Elasticsearch、Dynatrace** 為選用，預設關閉。
 - **模型自主巡檢**：不需要事先寫巡檢清單。模型會先探索有哪些指標、日誌欄位和實體，再決定要查什麼，並與過去同時段比較來判斷是否異常。
 - **以證據為準**：每個 Deployment 給出 OK / WARN / CRIT / UNKNOWN，每個結論都要附上查詢語句和數值，沒有證據的發現不會寫進報告。
-- **觸發方式**：可以單次執行、定時排程，或在聊天介面手動下令；報告寫成 Markdown 檔。
+- **觸發方式**：可以巡檢整個 namespace，或只巡檢指定的 Deployment；可以單次執行、定時排程，或在聊天介面手動下令；報告寫成 Markdown 檔。
 
 ### 設計原則
 - **全程唯讀**：MCP server 以唯讀模式啟動、Agent 端有工具白名單、prompt 明確禁止修改，三層把關，不會動到叢集或任何資料。
@@ -96,7 +96,7 @@ sequenceDiagram
 
     T->>M: 巡檢 namespace=xxx（含巡檢時間、時間窗）
     M->>M: write_todos：取得清單 → 分批巡檢 → 撰寫報告
-    M->>K: 列出所有 Deployment 與基本狀態
+    M->>K: 列出 Deployment（整個 namespace 或指定的 Deployment）與基本狀態
     K-->>M: 副本數 / selector / 映像 / 重啟 / Warning 事件
     M->>M: 每個 Deployment 一個待辦，每批 PATROL_BATCH_SIZE 個
 
@@ -127,7 +127,7 @@ sequenceDiagram
 ```
 
 **流程重點**
-1. **先取得清單**：k8s-agent 列出 namespace 下所有 Deployment 和基本狀態，主 Agent 為每個 Deployment 建立待辦。
+1. **先取得清單**：k8s-agent 列出 namespace 下所有 Deployment（或只取得指定的 Deployment）和基本狀態，主 Agent 為每個 Deployment 建立待辦。
 2. **分批平行巡檢**：每批最多 `PATROL_BATCH_SIZE` 個 Deployment，同一批內同時委派給所有已啟用的子 Agent。
 3. **綜合判斷**：每批結束後交叉比對各來源的證據，必要時追加委派，每個 Deployment 最多 `PATROL_MAX_ROUNDS_PER_DEPLOYMENT` 輪。
 4. **產出報告**：取各來源中最嚴重的狀態作為結論，寫出總表、異常詳情和證據清單。接近步數上限時，會停止委派並把未完成的 Deployment 標記為「未巡檢」。
@@ -138,7 +138,7 @@ sequenceDiagram
 
 | 層 | 元件 | 說明 |
 | --- | --- | --- |
-| 觸發 | `patrol_agent/patrol.py` | 單次或定時巡檢，報告寫到 `reports/` |
+| 觸發 | `patrol_agent/patrol.py` | 單次或定時巡檢整個 namespace 或指定的 Deployment，報告寫到 `reports/` |
 | 觸發 | `deep-agents-ui/` | 聊天介面，可追問或手動巡檢（:3300） |
 | Agent | 主巡檢 Agent | 列出 Deployment → 分批委派 → 綜合判斷 → 寫報告 |
 | Agent | `k8s-agent` | Deployment / Pod 狀態、重啟、OOM、Warning 事件、崩潰前日誌 |
@@ -211,13 +211,22 @@ cd patrol_agent && uv run python patrol.py --namespace payments --once
 cd patrol_agent && uv run python patrol.py --namespace payments --namespace orders --interval 30m
 ```
 
+只巡檢指定的 Deployment（可重複 `--deployment` 指定多個；此時只能指定一個 namespace）：
+
+```bash
+cd patrol_agent && uv run python patrol.py --namespace payments --deployment checkout --once
+```
+
 不啟動 `langgraph dev`，直接在本機程序內執行：
 
 ```bash
 cd patrol_agent && uv run python patrol.py --namespace payments --once --local
 ```
 
-報告會寫到 `reports/<namespace>/<YYYYmmdd-HHMMSS>.md`。
+`--deployment`、`--interval`、`--local` 可以互相搭配，例如每 10 分鐘只巡檢 checkout：`--namespace payments --deployment checkout --interval 10m`。
+
+報告會寫到 `reports/<namespace>/<YYYYmmdd-HHMMSS>.md`；指定 Deployment 時為 `reports/<namespace>/<YYYYmmdd-HHMMSS>-<deployment>.md`。
+在聊天介面也可以直接要求，例如「只巡檢 payments 的 checkout」。
 
 ### 6.（選用）聊天介面
 

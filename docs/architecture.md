@@ -72,7 +72,7 @@ sequenceDiagram
 
     T->>M: 巡檢 namespace=xxx（含巡檢時間、時間窗）
     M->>M: write_todos：取得清單 → 分批巡檢 → 撰寫報告
-    M->>K: 列出所有 Deployment 與基本狀態
+    M->>K: 列出 Deployment（整個 namespace 或指定的 Deployment）與基本狀態
     K-->>M: 副本數 / selector / 映像 / 重啟 / Warning 事件
     M->>M: 每個 Deployment 一個待辦，每批 PATROL_BATCH_SIZE 個
 
