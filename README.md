@@ -4,13 +4,135 @@
 
 給定一個 Kubernetes namespace，自動巡檢底下所有 Deployment，產出巡檢報告的 AI Agent。
 
-- 以 [deepagents](https://github.com/langchain-ai/deepagents) 0.7.39 建立主協調 Agent 與子 Agent
-- 透過 MCP 串接既有的可觀測性工具：**Kubernetes、Prometheus**（固定啟用），**Elasticsearch、Dynatrace**（選用，預設關閉）
-- 由模型自主判斷每個 Deployment 的健康狀態（OK / WARN / CRIT / UNKNOWN），每個結論都必須附上證據
-- 全程唯讀：不會修改叢集或任何資料
-- 可排程定時巡檢，也可手動觸發；報告寫成 Markdown 檔
+## 專案說明
 
-架構圖與流程圖見 [docs/architecture.md](docs/architecture.md)。
+### 要解決的問題
+日常巡檢通常要在好幾個工具之間切換：先用 kubectl 看 Pod 有沒有重啟，再到 Prometheus 看資源和錯誤率，接著翻日誌、查 APM 的告警。服務一多，人工巡檢既耗時又容易漏看。
+
+SRE Patrol Agent 把這件事交給 AI Agent：你只要給一個 namespace，它會自己列出所有 Deployment，到各個可觀測性工具收集證據，判斷每個 Deployment 是否健康，最後寫成一份報告。
+
+### 運作方式
+- **多 Agent 分工**：以 [deepagents](https://github.com/langchain-ai/deepagents) 0.7.39 建立一個主協調 Agent，搭配各資料來源的專門子 Agent。主 Agent 負責規劃、分批派工、綜合判斷；子 Agent 負責在各自的領域查資料。
+- **透過 MCP 串接既有工具**：不需要改動現有的監控系統。**Kubernetes、Prometheus** 固定啟用；**Elasticsearch、Dynatrace** 為選用，預設關閉。
+- **模型自主巡檢**：不需要事先寫巡檢清單。模型會先探索有哪些指標、日誌欄位和實體，再決定要查什麼，並與過去同時段比較來判斷是否異常。
+- **以證據為準**：每個 Deployment 給出 OK / WARN / CRIT / UNKNOWN，每個結論都要附上查詢語句和數值，沒有證據的發現不會寫進報告。
+- **觸發方式**：可以單次執行、定時排程，或在聊天介面手動下令；報告寫成 Markdown 檔。
+
+### 設計原則
+- **全程唯讀**：MCP server 以唯讀模式啟動、Agent 端有工具白名單、prompt 明確禁止修改，三層把關，不會動到叢集或任何資料。
+- **成本與範圍可控**：限制每批平行數量、每個 Deployment 的委派輪數和整體步數；工具結果過長會截斷，並提示模型縮小查詢範圍。
+- **資料來源可插拔**：選用來源用環境變數開關，關閉時對應的子 Agent、工具、prompt 段落和 MCP server 都不會載入。
+- **報告只做判斷與建議**：Agent 不會自動修復，報告中的推論應由人員確認後再採取行動。
+
+## 架構圖
+
+虛線為選用元件，預設關閉，用 `ENABLE_ELASTICSEARCH` / `ENABLE_DYNATRACE` 開啟。
+
+```mermaid
+graph TD
+    User((SRE / 使用者))
+
+    subgraph Trigger["⏰ 觸發層"]
+        CLI["patrol.py<br/>--once / --interval 30m / --local"]
+        UI["deep-agents-ui<br/>Next.js :3300"]
+    end
+
+    subgraph AgentLayer["🤖 Agent 層（langgraph dev :2024 · deepagents 0.7.39）"]
+        Main["主巡檢 Agent（patrol_agent）<br/>模型：PATROL_MODEL<br/>無 general-purpose、排除 execute"]
+        K8sA["k8s-agent"]
+        PromA["prometheus-agent"]
+        LogA["log-agent（Elasticsearch）"]
+        DtA["dynatrace-agent"]
+    end
+
+    subgraph MCP["🔌 MCP 轉接層（本機，scripts/mcp.sh）"]
+        K8sMCP["Kubernetes MCP :18080<br/>kubernetes-mcp-server · read_only"]
+        PromMCP["Prometheus MCP :18090<br/>prometheus-mcp-server（Docker）"]
+        ESMCP["Elasticsearch MCP :18100<br/>Elastic 官方（Docker）"]
+        DtMCP["Dynatrace MCP :18110<br/>repo 內 dynatrace_mcp · API v2"]
+    end
+
+    subgraph Existing["🏢 既有環境"]
+        K8s[("Kubernetes 叢集")]
+        Prom[("Prometheus")]
+        ES[("Elasticsearch")]
+        DT[("Dynatrace<br/>SaaS 舊版 / Managed")]
+    end
+
+    Reports[["reports/&lt;namespace&gt;/&lt;時間&gt;.md"]]
+
+    User --> CLI
+    User --> UI
+    CLI -->|"LangGraph API"| Main
+    UI -->|"LangGraph SDK"| Main
+    CLI -->|"寫入報告"| Reports
+
+    Main -->|"task()"| K8sA
+    Main -->|"task()"| PromA
+    Main -.->|"task()"| LogA
+    Main -.->|"task()"| DtA
+
+    K8sA --> K8sMCP --> K8s
+    PromA --> PromMCP --> Prom
+    LogA -.-> ESMCP -.-> ES
+    DtA -.-> DtMCP -.-> DT
+
+    classDef optional stroke-dasharray: 5 5,opacity:0.75
+    class LogA,DtA,ESMCP,DtMCP,ES,DT optional
+```
+
+## Agent 運作流程
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant T as patrol.py / UI
+    participant M as 主巡檢 Agent
+    participant K as k8s-agent
+    participant P as prometheus-agent
+    participant L as log-agent（選用）
+    participant D as dynatrace-agent（選用）
+    participant F as reports/
+
+    T->>M: 巡檢 namespace=xxx（含巡檢時間、時間窗）
+    M->>M: write_todos：取得清單 → 分批巡檢 → 撰寫報告
+    M->>K: 列出所有 Deployment 與基本狀態
+    K-->>M: 副本數 / selector / 映像 / 重啟 / Warning 事件
+    M->>M: 每個 Deployment 一個待辦，每批 PATROL_BATCH_SIZE 個
+
+    loop 每一批
+        par 平行委派
+            M->>K: Pod / rollout / 事件 / 崩潰前日誌
+            K-->>M: 狀態 + 證據
+        and
+            M->>P: 先探索指標，再查副本、重啟、OOM、記憶體、CPU 節流、錯誤率
+            P-->>M: 狀態 + PromQL + 數值
+        and 若 ENABLE_ELASTICSEARCH
+            M->>L: 先查 index 與 mapping，再統計錯誤日誌
+            L-->>M: 狀態 + 查詢 + 代表性日誌
+        and 若 ENABLE_DYNATRACE
+            M->>D: 對應實體、open problem、服務指標、近期事件
+            D-->>M: 狀態 + API 查詢 + 數值
+        end
+        M->>M: sre_think_tool：交叉比對、暫定狀態、是否追查（每個 Deployment 最多 N 輪）
+    end
+
+    alt 接近步數上限
+        M->>M: 停止委派，未完成者標記「未巡檢」
+    end
+
+    M->>M: write_file /patrol_report.md
+    M-->>T: 最終回覆
+    T->>F: 寫入 reports/xxx/YYYYmmdd-HHMMSS.md
+```
+
+**流程重點**
+1. **先取得清單**：k8s-agent 列出 namespace 下所有 Deployment 和基本狀態，主 Agent 為每個 Deployment 建立待辦。
+2. **分批平行巡檢**：每批最多 `PATROL_BATCH_SIZE` 個 Deployment，同一批內同時委派給所有已啟用的子 Agent。
+3. **綜合判斷**：每批結束後交叉比對各來源的證據，必要時追加委派，每個 Deployment 最多 `PATROL_MAX_ROUNDS_PER_DEPLOYMENT` 輪。
+4. **產出報告**：取各來源中最嚴重的狀態作為結論，寫出總表、異常詳情和證據清單。接近步數上限時，會停止委派並把未完成的 Deployment 標記為「未巡檢」。
+
+開關影響範圍與安全設計的細節見 [docs/architecture.md](docs/architecture.md)。
 
 ## 元件
 
