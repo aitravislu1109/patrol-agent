@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# LangGraph
+.langgraph_api/
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+scripts/k8s-mcp.toml
+
+# Node
+node_modules/
+.next/
+out/
+*.log
+
+# Local MCP runtime
+logs/
+.run/
+
+# Patrol reports (keep the directory, ignore generated reports)
+reports/*
+!reports/.gitkeep
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

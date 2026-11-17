@@ -1,0 +1,15 @@
+# kubernetes-mcp-server 設定範例（scripts/mcp.sh start 會依 .env 自動產生 scripts/k8s-mcp.toml）
+# 參考：https://github.com/containers/kubernetes-mcp-server
+
+# 有設定 port 時以 Streamable HTTP 模式啟動，端點為 http://<host>:<port>/mcp
+port = "18080"
+
+# 唯讀：只註冊不會修改叢集的工具
+read_only = true
+disable_destructive = true
+
+# 只需要核心工具組（Pod、資源、事件）
+toolsets = ["core"]
+
+# 留空使用 $KUBECONFIG 或 ~/.kube/config
+# kubeconfig = "/path/to/readonly-kubeconfig"
